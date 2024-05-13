@@ -38,23 +38,32 @@ def create_directories_from_overview():
         os.makedirs(directory_path, exist_ok=True)
 
 def get_organisms_from_path(selected_path):
-    """Returns a dictionary of organism names with their corresponding paths by traversing directories recursively."""
+    """Returns a dictionary of organism names with their corresponding paths and most recent modification dates by traversing directories recursively."""
     organisms = {}
-    # Fonction récursive pour parcourir les sous-répertoires
+    
     def traverse_directories(current_path):
-        # Liste les entrées dans le répertoire courant
         entries = os.listdir(current_path)
-        if any(os.path.isdir(os.path.join(current_path, entry)) for entry in entries):
-            # Parcours des sous-répertoires s'il y en a
-            for entry in entries:
-                path = os.path.join(current_path, entry)
-                if os.path.isdir(path):
-                    traverse_directories(path)
-        else:
-            # Ajoute le dernier niveau de répertoire (organisme) au dictionnaire avec le chemin complet
-            organism_name = os.path.basename(current_path)
-            organisms[organism_name] = current_path
+        most_recent_date = None
+        formatted_date = None
+        
+        for entry in entries:
+            path = os.path.join(current_path, entry)
+            if os.path.isdir(path):
+                # Continue to traverse the directory
+                traverse_directories(path)
+            else:
+                # Get the modification time for each file
+                modification_time = os.path.getmtime(path)
+                if most_recent_date is None or modification_time > most_recent_date:
+                    most_recent_date = modification_time
+        
+        if most_recent_date is not None:
+            # Format the most recent modification date
+            formatted_date = datetime.fromtimestamp(most_recent_date).strftime('%Y-%m-%d %H:%M:%S')
+        organism_name = os.path.basename(current_path)
+            
+        organisms[organism_name] = (current_path, formatted_date)
 
-    # Commence la traversée depuis le chemin sélectionné
     traverse_directories(selected_path)
     return organisms
+

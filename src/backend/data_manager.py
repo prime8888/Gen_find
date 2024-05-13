@@ -2,6 +2,9 @@ import os
 from Bio import Entrez, SeqIO
 from Bio.SeqFeature import CompoundLocation
 from Bio.Seq import Seq
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from urllib.error import HTTPError
 
 email = "daniil.kudriashov@etu.unistra.fr"
 
@@ -9,24 +12,79 @@ def fetch_nc_ids_for_organisms(organisms):
     """Fetch NCBI identifiers for specified organisms."""
     Entrez.email = email
     for organism, path in organisms.items():
-        query = f"{organism}[Orgn] AND refseq[filter] AND (\"NC_000000\"[Accession] : \"NC_999999\"[Accession])"
+        query = f"{organism}[Orgn] AND (\"NC_000000\"[Accession] : \"NC_999999\"[Accession])"
         handle = Entrez.esearch(db="nucleotide", term=query, rettype="gb", retmode="text", retmax=9999999)
         search_results = Entrez.read(handle)
         handle.close()
         organisms[organism] = {'ids': search_results['IdList'], 'path': path}
     return organisms
 
-def fetch_genbank_records(organisms):
-    """ Télécharge les enregistrements GenBank pour une liste d'identifiants NC. """
+def fetch_genbank_records_by_organism(organism, data, email, rettype="gb"):
+    """Fetch GenBank records for all IDs of a single organism with retries and exponential backoff."""
     Entrez.email = email
-    records = {}
+    retries = 5
+    delay = 1  # start with 1 second delay
+    for attempt in range(retries):
+        try:
+            handle = Entrez.efetch(db="nucleotide", id=','.join(data['ids']), rettype=rettype, retmode="text")
+            print(f"Fetched records for {organism}")
+            records = list(SeqIO.parse(handle, "genbank"))
+            handle.close()
+            return organism, {'records': records, 'path': data['path']}
+        except HTTPError as e:
+            if e.code == 429 or e.code == 503:  # Too many requests or service unavailable
+                print(f"Rate limit hit, retrying in {delay} seconds...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                raise  # Re-raise the error if it's not a rate limit issue
+        except Exception as exc:
+            print(f"An error occurred: {exc}")
+            break  # Exit the loop if an unexpected error occurs
+
+def fetch_genbank_record_by_id(organism, id, path, rettype="gb"):
+    """Fetch GenBank record for a single ID with retries and exponential backoff."""
+    Entrez.email = email
+    retries = 5
+    delay = 1  # start with 1 second delay
+    for attempt in range(retries):
+        try:
+            handle = Entrez.efetch(db="nucleotide", id=id, rettype=rettype, retmode="text")
+            print(f"Fetched record for ID {id} in {organism}")
+            record = list(SeqIO.parse(handle, "genbank"))
+            print(f"Parsed record for ID {id} in {organism}")
+            handle.close()
+            return organism, {'record': record, 'path': path}
+        except HTTPError as e:
+            if e.code == 429 or e.code == 503:  # Too many requests or service unavailable
+                print(f"Rate limit hit, retrying in {delay} seconds...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                raise  # Re-raise the error if it's not a rate limit issue
+
+def fetch_genbank_records(organisms, max_workers=5, rettype="gb"):
+    """Download GenBank records using multithreading, switching strategy based on number of organisms."""
+    records = {org: {'records': [], 'path': data['path']} for org, data in organisms.items()}
     
-    for organism, data in organisms.items():
-        records[organism] = {'records': [], 'path': data['path']}
-        handle = Entrez.efetch(db="nucleotide", id=','.join(data['ids']), rettype="gbwithparts", retmode="text")
-        print("Fetched records for", organism, "starting to parse...")
-        records[organism]['records'] = list(SeqIO.parse(handle, "genbank"))
-        handle.close()
+    if len(organisms) > max_workers:
+        # Use batch fetching by organism
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(fetch_genbank_records_by_organism, organism, data, rettype): organism for organism, data in organisms.items()}
+            for future in as_completed(futures):
+                organism, result = future.result()
+                records[organism] = result
+    else:
+        # Use fetching by individual IDs
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for organism, data in organisms.items():
+                for id in data['ids']:
+                    futures.append(executor.submit(fetch_genbank_record_by_id, organism, id, data['path'], rettype))
+            for future in as_completed(futures):
+                organism, result = future.result()
+                records[organism]['records'].extend(result['record'])
+
     return records
 
 def extract_cds_and_related_features(records, selected_regions):

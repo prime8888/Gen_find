@@ -1,3 +1,11 @@
 *.gb
 *.txt
 *.py[cod]
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Python cache directories
+__pycache__/

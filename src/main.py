@@ -3,10 +3,13 @@ import os
 
 def main():
     # Execution
-    # fetch_and_update_overview()
+    fetch_and_update_overview()
     # get organisms from path
-    organisms = get_organisms_from_path("C:/Educ/Analyse_texte/new_proj/Results/Eukaryota/Animals/Mammals/Hippopotamus amphibius")
-    print(organisms)
+    current = os.getcwd()
+    current = current.replace("\\", "/")
+
+    organisms = get_organisms_from_path(current + "/Results/Eukaryota/Animals/Mammals")
+    # print(organisms)
     max_workers = os.cpu_count() + 2
     organisms = fetch_nc_ids_for_organisms(organisms)
     records = fetch_genbank_records(organisms, rettype="gbwithparts", max_workers=max_workers)

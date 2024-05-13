@@ -67,3 +67,10 @@ def get_organisms_from_path(selected_path):
     traverse_directories(selected_path)
     return organisms
 
+def get_organisms_from_path_list(selected_paths):
+    """Returns a dictionary of organism names with their corresponding paths and most recent modification dates from a list of paths."""
+    organisms = {}
+    for path in selected_paths:
+        orgs = get_organisms_from_path(path)
+        organisms.update(orgs)
+    return organisms

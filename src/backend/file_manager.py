@@ -2,12 +2,15 @@ import requests
 import pandas as pd
 import os
 from datetime import datetime
+from ui.logger import *
 
 url = "https://ftp.ncbi.nlm.nih.gov/genomes/GENOME_REPORTS/overview.txt"
 local_path = "local_overview.txt"
 
 def fetch_and_update_overview():
     """Fetch overview file from NCBI FTP and check if updates are needed based on the 'last-modified' header."""
+
+    logger = logging.getLogger()
     if os.path.exists(local_path):
         local_modified_time = datetime.fromtimestamp(os.path.getmtime(local_path))
     else:
@@ -15,22 +18,22 @@ def fetch_and_update_overview():
 
     response = requests.head(url)
     last_modified = response.headers.get('Last-Modified')
-    print(f"Last modified time: {last_modified}")
     last_modified_time = datetime.strptime(last_modified, '%a, %d %b %Y %H:%M:%S GMT')
-    print(f"Last modified time: {last_modified_time}")
 
     if last_modified_time > local_modified_time or not os.path.exists(local_path):
-        print("Newer file found or local file does not exist, downloading update...")
+        logger.info("Newer file found or local file does not exist, downloading update...")
         response = requests.get(url)
         with open(local_path, 'wb') as file:
             file.write(response.content)
         create_directories_from_overview()
     else:
-        print("Local data is up-to-date.")
+        logger.info("Local tree is up-to-date.")
 
 def create_directories_from_overview():
     """Creates directories based on the organism information in the overview file."""
     df = pd.read_csv(local_path, sep='\t')
+
+    # Project root directory
     base_path = "./Results"
 
     for index, row in df.iterrows():
@@ -67,3 +70,10 @@ def get_organisms_from_path(selected_path):
     traverse_directories(selected_path)
     return organisms
 
+def get_organisms_from_path_list(selected_paths):
+    """Returns a dictionary of organism names with their corresponding paths and most recent modification dates from a list of paths."""
+    organisms = {}
+    for path in selected_paths:
+        orgs = get_organisms_from_path(path)
+        organisms.update(orgs)
+    return organisms

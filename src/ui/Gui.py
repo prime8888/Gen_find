@@ -136,8 +136,9 @@ class MainWindow(QMainWindow):
             start_dir = os.path.dirname(start_dir)
         else:
             start_dir = start_dir
-        # Set up the file system model
+        #Set up the file system model
         start_dir = os.path.join(start_dir, "Results")
+        # start_dir = "./Results"
         self.model = QFileSystemModel()
         self.model.setRootPath(start_dir)
 

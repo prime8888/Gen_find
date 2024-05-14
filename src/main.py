@@ -1,7 +1,6 @@
-# from backend import *
-# import os
 from ui import *
 from PyQt5.QtWidgets import QApplication
+import sys
 
 def main():
     app = QApplication(sys.argv)

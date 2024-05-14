@@ -9,6 +9,9 @@ local_path = "local_overview.txt"
 
 def fetch_and_update_overview():
     """Fetch overview file from NCBI FTP and check if updates are needed based on the 'last-modified' header."""
+    base_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    local_path = os.path.join(base_path, 'local_overview.txt')
+
     logger = logging.getLogger()
     if os.path.exists(local_path):
         local_modified_time = datetime.fromtimestamp(os.path.getmtime(local_path))
@@ -30,8 +33,12 @@ def fetch_and_update_overview():
 
 def create_directories_from_overview():
     """Creates directories based on the organism information in the overview file."""
+    base_path = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    local_path = os.path.join(base_path, 'local_overview.txt')
     df = pd.read_csv(local_path, sep='\t')
-    base_path = "./Results"
+
+    # Project root directory
+    base_path = os.path.join(base_path, 'Results')
 
     for index, row in df.iterrows():
         directory_path = os.path.join(base_path, row['Kingdom'], row['Group'], row['SubGroup'], row['#Organism/Name'].replace("[", "").replace(":", "").replace("?", "").replace("/", "").replace("]", ""))

@@ -2,7 +2,7 @@ import sys
 import csv
 from ui.utils import toggle_all_checkboxes, checkbox_toggled
 # import requests
-from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeWidget, QPushButton, QMenu, QTreeWidgetItem, QVBoxLayout, QWidget, QTextEdit, QHBoxLayout, QLabel, QCheckBox, QFrame, QSizePolicy, QMessageBox, QTreeView, QFileSystemModel
+from PyQt5.QtWidgets import QMainWindow, QPushButton, QMenu, QTreeWidgetItem, QVBoxLayout, QWidget, QTextEdit, QHBoxLayout, QLabel, QCheckBox, QFrame, QSizePolicy, QMessageBox, QTreeView, QFileSystemModel, QProgressBar
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDir, QRunnable, QThreadPool, QMetaObject, QObject, Q_ARG
 from backend import *
 from ui.logger import *
@@ -41,6 +41,7 @@ class WorkerThread(QThread):
     dataFetched = pyqtSignal()
     errorOccurred = pyqtSignal(str)
     fullStop = pyqtSignal()
+    progressUpdated = pyqtSignal(int)
 
     def __init__(self, selected_paths, selected_regions, rettype="gbwithparts", max_workers=5):
         super(WorkerThread, self).__init__()
@@ -52,11 +53,14 @@ class WorkerThread(QThread):
         self.runnables = []
         self.logger = logging.getLogger()
         self.stopped = False
+        self.totalTasks = 0
+        self.completedTasks = 0
 
     def run(self):
         try:
             organisms = get_organisms_from_path_list(self.selected_paths)
             organisms = fetch_nc_ids_for_organisms(organisms)
+            self.totalTasks = sum(len(data['ids']) for data in organisms.values())
 
             for organism, data in organisms.items():
                 for id in data['ids']:
@@ -75,7 +79,9 @@ class WorkerThread(QThread):
             self.errorOccurred.emit(str(e))
 
     def recordProcessed(self, organism, path):
-        pass
+        self.completedTasks += 1
+        progress = int((self.completedTasks / self.totalTasks) * 100)
+        self.progressUpdated.emit(progress)
 
     def handleError(self, error):
         self.errorOccurred.emit(error)
@@ -127,15 +133,22 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(right_side_layout, 2)
 
     def setup_tree_layout(self):
+        start_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        if start_dir.endswith('src'):
+            # Move up to the parent directory
+            start_dir = os.path.dirname(start_dir)
+        else:
+            start_dir = start_dir
         # Set up the file system model
+        start_dir = os.path.join(start_dir, "Results")
         self.model = QFileSystemModel()
-        self.model.setRootPath(QDir.rootPath())
+        self.model.setRootPath(start_dir)
 
         tree_layout = QVBoxLayout()
         # Set up the tree view
         self.tree = QTreeView()
         self.tree.setModel(self.model)
-        self.tree.setRootIndex(self.model.index(os.path.join(QDir.currentPath(), "Results")))
+        self.tree.setRootIndex(self.model.index(start_dir))
         for column in range(1, self.model.columnCount()):
             self.tree.hideColumn(column)
         # self.tree.setHeaderLabel("Taxonomy Hierarchy")
@@ -178,9 +191,6 @@ class MainWindow(QMainWindow):
             self.tree.collapseItem(self.tree.currentItem())
 
     def on_tree_clicked(self, index):
-        # item = self.tree.currentItem()
-        # if item is not None:
-        #     self.info_output.setText(f"You clicked on {item.text(0)}")
         indexes = self.tree.selectionModel().selectedIndexes()
         # Filter indexes to get only those from the first column
         unique_indexes = {idx.row(): idx for idx in indexes if idx.column() == 0}
@@ -210,9 +220,11 @@ class MainWindow(QMainWindow):
         self.thread.errorOccurred.connect(self.handle_error)
         self.thread.dataFetched.connect(self.processing_finished)
         self.thread.fullStop.connect(self.processing_stopped)
+        self.thread.progressUpdated.connect(self.progressBar.setValue)
         self.thread.start()
 
     def processing_finished(self):
+        self.progressBar.setValue(100)
         self.logger.info("All records parsed successfully.")
         self.start_button.setText("Start Processing")
         try:        
@@ -244,23 +256,10 @@ class MainWindow(QMainWindow):
             except TypeError:
                 pass
 
-    def update_tree(self, fetched_data):
-        self.tree.clear()
-        for tax_name, details in fetched_data.items():
-            parent_item = QTreeWidgetItem(self.tree)
-            parent_item.setText(0, tax_name)
-            self.add_tax_items(parent_item, details)
 
-    def add_tax_items(self, parent_item, details):
-        for name, tax_id, rank in details:
-            item = QTreeWidgetItem(parent_item)
-            item.setText(0, f"{name} ({rank})")
-
-    def add_tree_item(self, parent_item, text):
-        item = QTreeWidgetItem(parent_item)
-        item.setText(0, text)
 
     def handle_error(self, error_message):
+        self.progressBar.reset()
         QMessageBox.critical(self, "Error", f"An error occurred: {error_message}")
         self.log_text.append(f"Error occurred: {error_message}")
         self.start_button.setText("Start Processing")
@@ -276,17 +275,47 @@ class MainWindow(QMainWindow):
         info_frame.setStyleSheet("border: none;")
         info_layout = QVBoxLayout(info_frame)
 
+        # Title Label
         info_title = QLabel("Information")
         info_title.setObjectName("info_title")
         info_title.setAlignment(Qt.AlignCenter)
-        info_title.setStyleSheet("padding: 6px; border: none;")
-        self.info_output = QTextEdit()
-        self.info_output.setStyleSheet("background-color:#1a1a2e;")
-        self.info_output.setReadOnly(True)
+        info_title.setStyleSheet("padding: 6px; border: none; font-weight: bold;")
 
+        # Progress Bar setup
+        self.progressBar = QProgressBar()
+        self.progressBar.setMaximumWidth(250)  # Limit the width
+        self.progressBar.setMinimumHeight(20)  # Ensure there's a minimum height
+        self.progressBar.setMinimumSize(250, 20)  # Minimum size to ensure visibility
+        self.progressBar.setMaximumSize(500, 30)  # Optional: limit the maximum size if necessary
+        self.progressBar.setMaximum(100)
+        self.progressBar.setValue(0)  # Set an initial value to make it visible for testing
+        self.progressBar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid grey;
+                border-radius: 5px;
+                background-color: #f0f0f0; 
+                color: black; 
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: green; /* Color of the progress meter */
+                width: 20px; /* Chunk size */
+            }
+        """)
+
+        # Horizontal layout to center the progress bar
+        hbox = QHBoxLayout()
+        hbox.addStretch(1)
+        hbox.addWidget(self.progressBar)
+        hbox.addStretch(1)
+
+        # Adding widgets to the vertical layout of the frame
         info_layout.addWidget(info_title)
-        info_layout.addWidget(self.info_output)
-        layout.addWidget(info_frame, 1)
+        info_layout.addLayout(hbox)  # Add the centered progress bar
+        info_layout.addStretch(1)
+
+        # Add the frame to the main layout
+        layout.addWidget(info_frame)
 
     def create_logs_section(self, layout):
         log_frame = QFrame()
@@ -345,7 +374,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(selection_frame, 1)
 
     def apply_stylesheet(self):
-        stylesheet_path = "./ui/style.qss"
+        # Load the stylesheet from the file
+        project_path = os.path.dirname(os.path.dirname(__file__))
+        stylesheet_path = os.path.join(project_path, "ui", "style.qss")
         with open(stylesheet_path, "r") as file:
             self.setStyleSheet(file.read())
 

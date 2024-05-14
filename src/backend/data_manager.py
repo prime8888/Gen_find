@@ -2,10 +2,11 @@ import os
 from Bio import Entrez, SeqIO
 from Bio.SeqFeature import CompoundLocation
 from Bio.Seq import Seq
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import random
 from urllib.error import HTTPError
 from datetime import datetime
+from ui.logger import *
 
 email = "daniil.kudriashov@etu.unistra.fr"
 
@@ -14,6 +15,7 @@ def fetch_nc_ids_for_organisms(organisms):
     retries = 5
     delay = 1  # start with 1 second delay
     updated_organisms = {}
+    logger = logging.getLogger()
 
     for organism, item in organisms.items():
         path, mod_date = item
@@ -34,14 +36,14 @@ def fetch_nc_ids_for_organisms(organisms):
                 with Entrez.esearch(db="nucleotide", term=query, rettype="gb", retmode="text", retmax=9999999) as handle:
                     search_results = Entrez.read(handle)
                     if 'IdList' in search_results and search_results['IdList']:
-                        print(f"Found {len(search_results['IdList'])} newer records for {organism}")
+                        logger.info(f"Found {len(search_results['IdList'])} newer records for {organism}")
                         updated_organisms[organism] = {'ids': search_results['IdList'], 'path': path}
                         break  # Successfully fetched, break out of retry loop
                     else:
-                        print(f"No newer records found for {organism}")
+                        logger.info(f"No newer records found for {organism}")
                         break
             except HTTPError as e:
-                print(f"HTTP error fetching IDs for {organism}, attempt {attempt + 1}: {e}")
+                logger.warning(f"HTTP error fetching IDs for {organism}, attempt {attempt + 1}: {e}")
                 last_exception = e
                 if e.code == 429 or e.code == 503:
                     time.sleep(delay)
@@ -49,70 +51,44 @@ def fetch_nc_ids_for_organisms(organisms):
                 else:
                     break  # Break on other HTTP errors
             except Exception as exc:
-                print(f"An error occurred fetching IDs for {organism}: {exc}")
+                logger.warning(f"An error occurred fetching IDs for {organism}: {exc}")
                 last_exception = exc
                 break  # Exit the loop if an unexpected error occurs
         
         if last_exception and organism not in updated_organisms:
-            print(f"Failed to fetch NCBI IDs for {organism} after {retries} attempts: {last_exception}")
+            logger.warning(f"Failed to fetch NCBI IDs for {organism} after {retries} attempts: {last_exception}")
 
     return updated_organisms
 
-def fetch_genbank_records_by_organism(organism, data, rettype="gb"):
-    """Fetch GenBank records for all IDs of a single organism with retries and exponential backoff.
-    Skip the organism if all retries fail due to recoverable errors."""
-    Entrez.email = email
-    retries = 5
-    delay = 1  # start with 1 second delay
-    last_exception = None
 
-    for attempt in range(retries):
-        try:
-            with Entrez.efetch(db="nucleotide", id=','.join(data['ids']), rettype=rettype, retmode="text") as handle:
-                print(f"Fetched records for {organism}")
-                records = list(SeqIO.parse(handle, "genbank"))
-                return organism, {'records': records, 'path': data['path']}
-        except HTTPError as e:
-            last_exception = e
-            if e.code == 429 or e.code == 503:  # Too many requests or service unavailable
-                print(f"Rate limit hit, retrying in {delay} seconds...")
-                time.sleep(delay)
-                delay *= 2  # Exponential backoff
-                if delay > 60:  # Prevent excessively long wait times
-                    break
-            else:
-                break  # Break on other HTTP errors as they might not be recoverable
-        except Exception as exc:
-            last_exception = exc
-            print(f"An error occurred fetching records for {organism}: {exc}")
-            break  # Exit the loop if an unexpected error occurs
-
-    # If all retries are exhausted or a severe error occurs, log and skip this organism
-    print(f"Failed to fetch records for {organism} after {retries} attempts: {last_exception}")
-    return organism, {'records': [], 'path': data['path']}  # Return an empty record list for this organism
-
-def fetch_genbank_record_by_id(organism, id, path, rettype="gb"):
+def fetch_records_and_process(organism, id, path, selected_regions, rettype="gbwithparts"):
     """Fetch GenBank record for a single ID with retries. Skip the record if all retries fail."""
     Entrez.email = email
     retries = 5
     delay = 1  # start with 1 second delay
     last_exception = None
+    logger = logging.getLogger()
 
+    time.sleep(random.uniform(0, 1))
     for attempt in range(retries):
         try:
+            if(attempt > 0):
+                logger.warning(f"Attempt {attempt + 1} to fetch record for ID {id} in {organism}")
             with Entrez.efetch(db="nucleotide", id=id, rettype=rettype, retmode="text") as handle:
-                print(f"Fetched record for ID {id} in {organism}")
                 record = list(SeqIO.parse(handle, "genbank"))
-                print(f"Parsed record for ID {id} in {organism}")
-                return organism, {'record': record, 'path': path}
+                data = {organism: {'records': record, 'path': path}}
+                process_genomic_data(data, selected_regions)
+                logger.info(f"Processed record for ID {id} in {organism}")
+                return
         except HTTPError as e:
             if e.code == 429 or e.code == 503:  # Too many requests or service unavailable
-                print(f"Rate limit hit, retrying in {delay} seconds...")
+                logger.warning(f"Rate limit hit, retrying in {delay} seconds...")
                 time.sleep(delay)
                 delay *= 2  # Exponential backoff
                 last_exception = e
             else:
                 last_exception = e
+                logger.error(f"Exception for ID {id} in {organism}: {e}")
                 break  # Break on unrecoverable HTTP errors
         except Exception as e:
             last_exception = e
@@ -122,32 +98,9 @@ def fetch_genbank_record_by_id(organism, id, path, rettype="gb"):
                 break
 
     # If all retries are exhausted, log and skip this record
-    print(f"Failed to fetch record for ID {id} in {organism} after {retries} attempts: {last_exception}")
-    return organism, {'record': [], 'path': path}  # Return empty list for this ID's record
+    logger.warning(f"Failed to fetch record for ID {id} in {organism} after {retries} attempts: {last_exception}")
+    return
 
-def fetch_genbank_records(organisms, max_workers=5, rettype="gb"):
-    """Download GenBank records using multithreading, switching strategy based on number of organisms."""
-    records = {org: {'records': [], 'path': data['path']} for org, data in organisms.items()}
-    
-    if len(organisms) > max_workers:
-        # Use batch fetching by organism
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(fetch_genbank_records_by_organism, organism, data, rettype): organism for organism, data in organisms.items()}
-            for future in as_completed(futures):
-                organism, result = future.result()
-                records[organism] = result
-    else:
-        # Use fetching by individual IDs
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for organism, data in organisms.items():
-                for id in data['ids']:
-                    futures.append(executor.submit(fetch_genbank_record_by_id, organism, id, data['path'], rettype))
-            for future in as_completed(futures):
-                organism, result = future.result()
-                records[organism]['records'].extend(result['record'])
-
-    return records
 
 def extract_cds_and_related_features(records, selected_regions):
     """Extracts CDS and, if selected, their exons and introns."""
@@ -173,7 +126,6 @@ def extract_cds_and_related_features(records, selected_regions):
                         cds_data[feature_loc] = cds_info
 
                 # Write CDS data and exon details if selected
-                # print(cds_data)
                 if cds_data:
                     filename = f"CDS_{organism_modified}_{record.name}.txt"
                     file_path = os.path.join(path, filename)
@@ -228,7 +180,6 @@ def extract_other_functional_regions(records, selected_regions):
                             'sequence': sequence
                         }
                         all_region_data[feature_type][feature_loc] = region_info
-                # print(all_region_data)
                 # Write collected data for each type of region to corresponding files
                 for feature_type, items in all_region_data.items():
                     filename = f"{feature_type}_{organism_modified}_{record.name}.txt"

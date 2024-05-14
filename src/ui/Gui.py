@@ -3,67 +3,89 @@ import csv
 from ui.utils import toggle_all_checkboxes, checkbox_toggled
 # import requests
 from PyQt5.QtWidgets import QApplication, QMainWindow, QTreeWidget, QPushButton, QMenu, QTreeWidgetItem, QVBoxLayout, QWidget, QTextEdit, QHBoxLayout, QLabel, QCheckBox, QFrame, QSizePolicy, QMessageBox, QTreeView, QFileSystemModel
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDir
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDir, QRunnable, QThreadPool, QMetaObject, QObject, Q_ARG
 from backend import *
-# from Bio import Entrez
+from ui.logger import *
 
-# Define your email here for NCBI access
-# Entrez.email = "emailbidon@ncbi.nlm.nih.gov"
 
-# class FetchThread(QThread):
-#     dataFetched = pyqtSignal(dict)
-#     errorOccurred = pyqtSignal(str)
+class Signals(QObject):
+    processComplete = pyqtSignal(object, object)  # You can customize these signals as needed
+    processFailed = pyqtSignal(str)
 
-#     def __init__(self, tax_ids):
-#         super().__init__()
-#         self.tax_ids = tax_ids
+class ProcessRunnable(QRunnable):
+    def __init__(self, organism, id, path, selected_regions, rettype):
+        super(ProcessRunnable, self).__init__()
+        self.signals = Signals()
+        self.organism = organism
+        self.id = id
+        self.path = path
+        self.rettype = rettype
+        self.selected_regions = selected_regions
+        self._is_running = True
 
-#     def run(self):
-#         try:
-#             result = {}
-#             for tax_name, tax_id in self.tax_ids.items():
-#                 details = self.fetch_tax_details(tax_id)
-#                 result[tax_name] = details
-#             self.dataFetched.emit(result)
-#         except Exception as e:
-#             self.errorOccurred.emit(str(e))
+    def run(self):
+        if not self._is_running:
+            return
+        
+        try:
+            fetch_records_and_process(self.organism, self.id, self.path, self.selected_regions, rettype=self.rettype)
+            self.signals.processComplete.emit(self.organism, self.path)
+        except Exception as e:
+            self.signals.processFailed.emit(str(e))
 
-#     def fetch_tax_details(self, tax_id, details=None):
-#         if details is None:
-#             details = []
-#         handle = Entrez.efetch(db="taxonomy", id=tax_id, retmode="xml")
-#         records = Entrez.read(handle)
-#         handle.close()
-#         for record in records:
-#             if 'LineageEx' in record:
-#                 for lineage in record['LineageEx']:
-#                     details.append((lineage['ScientificName'], lineage['TaxId'], lineage['Rank']))
-#                     if lineage['Rank'] in ['family', 'genus']:  # You can adjust the depth condition
-#                         self.fetch_tax_details(lineage['TaxId'], details)
-#         return details
+    def stop(self):
+        self._is_running = False
+
 
 class WorkerThread(QThread):
     dataFetched = pyqtSignal()
     errorOccurred = pyqtSignal(str)
+    fullStop = pyqtSignal()
 
-    def __init__(self, max_workers, selected_paths, selected_regions, rettype="gbwithparts"):
-        super().__init__()
-        self.max_workers = max_workers
+    def __init__(self, selected_paths, selected_regions, rettype="gbwithparts", max_workers=5):
+        super(WorkerThread, self).__init__()
         self.selected_paths = selected_paths
-        self.rettype = rettype
         self.selected_regions = selected_regions
+        self.rettype = rettype
+        self.threadPool = QThreadPool.globalInstance()
+        self.threadPool.setMaxThreadCount(max_workers)
+        self.runnables = []
+        self.logger = logging.getLogger()
+        self.stopped = False
 
     def run(self):
         try:
             organisms = get_organisms_from_path_list(self.selected_paths)
-            print(organisms)
-            print(self.selected_regions)
             organisms = fetch_nc_ids_for_organisms(organisms)
-            records = fetch_genbank_records(organisms, rettype=self.rettype, max_workers=self.max_workers)
-            process_genomic_data(records, self.selected_regions)
-            self.dataFetched.emit()
+
+            for organism, data in organisms.items():
+                for id in data['ids']:
+                    runnable = ProcessRunnable(organism, id, data['path'], self.selected_regions, self.rettype)
+                    runnable.signals.processComplete.connect(self.recordProcessed)
+                    runnable.signals.processFailed.connect(self.handleError)
+                    self.runnables.append(runnable)
+                    self.threadPool.start(runnable)
+            self.threadPool.waitForDone()
+            if not self.stopped:
+                self.dataFetched.emit()
+            else:
+                self.fullStop.emit()
+            
         except Exception as e:
             self.errorOccurred.emit(str(e))
+
+    def recordProcessed(self, organism, path):
+        pass
+
+    def handleError(self, error):
+        self.errorOccurred.emit(error)
+
+    def stop(self):
+        self.stopped = True
+        self.logger.warning("Stopping all tasks. Waiting for working threads to finish...")
+        for runnable in self.runnables:
+            if hasattr(runnable, 'stop'):
+                runnable.stop()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -82,7 +104,9 @@ class MainWindow(QMainWindow):
     def onStartApp(self):
         self.selected_regions = []
         self.selected_paths = []
-        self.max_workers = os.cpu_count() + 2
+        # self.max_workers = os.cpu_count() + 8
+        self.max_workers = 12
+        self.logger = logging.getLogger()
         fetch_and_update_overview()
 
 
@@ -132,20 +156,14 @@ class MainWindow(QMainWindow):
 
     def setup_buttons(self):
         button_layout = QHBoxLayout()
-        start_button = QPushButton("Start Fetch")
-        stop_button = QPushButton("Stop Fetch")
-        expand_button = QPushButton("Expand All")
-        collapse_button = QPushButton("Collapse All")
+        start_button = QPushButton("Start Processing")
+        self.start_button = start_button
 
         start_button.clicked.connect(self.start_clicked)
-        stop_button.clicked.connect(self.stop_clicked)
-        expand_button.clicked.connect(lambda: self.tree.expandAll())
-        collapse_button.clicked.connect(lambda: self.tree.collapseAll())
 
         button_style = "QPushButton { background-color: #313042; color: white; font-weight: bold; }"
-        for button in [start_button, stop_button, expand_button, collapse_button]:
-            button.setStyleSheet(button_style)
-            button_layout.addWidget(button)
+        start_button.setStyleSheet(button_style)
+        button_layout.addWidget(start_button)
 
         return button_layout
 
@@ -168,7 +186,9 @@ class MainWindow(QMainWindow):
         unique_indexes = {idx.row(): idx for idx in indexes if idx.column() == 0}
         paths = [self.model.filePath(idx) for idx in unique_indexes.values()]
         self.selected_paths = paths
-        print(paths)
+        self.logger.info(f"Selected paths:")
+        for path in paths:
+            self.logger.info(f"{path}")
 
     def start_clicked(self):
         if not self.selected_paths:
@@ -177,17 +197,52 @@ class MainWindow(QMainWindow):
         if not any(checkbox.isChecked() for checkbox in self.checkboxes):
             QMessageBox.critical(self, "Error", "Please select at least one region")
             return
+        self.start_button.setText("Stop Processing")
+        try:        
+            self.start_button.clicked.disconnect()
+        except TypeError:
+            pass
+        self.start_button.clicked.connect(self.stop_clicked)
         self.selected_regions = [checkbox.text() for checkbox in self.checkboxes if checkbox.isChecked()]
         if "ALL" in self.selected_regions:
             self.selected_regions = ["mobile_element", "5'UTR", "telomere", "intron", "3'UTR", "rRNA", "centromere", "tRNA", "ncRNA", "CDS"]
-        self.thread = WorkerThread(self.max_workers, self.selected_paths, self.selected_regions)
+        self.thread = WorkerThread(self.selected_paths, self.selected_regions, max_workers=self.max_workers)
         self.thread.errorOccurred.connect(self.handle_error)
+        self.thread.dataFetched.connect(self.processing_finished)
+        self.thread.fullStop.connect(self.processing_stopped)
         self.thread.start()
 
+    def processing_finished(self):
+        self.logger.info("All records parsed successfully.")
+        self.start_button.setText("Start Processing")
+        try:        
+            self.start_button.clicked.disconnect()
+        except TypeError:
+            pass
+        self.start_button.clicked.connect(self.start_clicked)
+        self.start_button.setDisabled(False)
+
+    def processing_stopped(self):
+        self.logger.info("All remaining threads stopped.")
+        self.start_button.setText("Start Processing")
+
+        try:        
+            self.start_button.clicked.disconnect()
+        except TypeError:
+            pass
+        
+        self.start_button.clicked.connect(self.start_clicked)
+        self.start_button.setDisabled(False)
+
     def stop_clicked(self):
-        if self.thread.isRunning():
-            self.thread.terminate()
-        print("Fetch stopped")
+        if self.thread:
+            self.thread.stop()
+            self.start_button.setText("Waiting for remaining threads to stop...")
+            self.start_button.setDisabled(True)
+            try:        
+                self.start_button.clicked.disconnect()
+            except TypeError:
+                pass
 
     def update_tree(self, fetched_data):
         self.tree.clear()
@@ -208,6 +263,13 @@ class MainWindow(QMainWindow):
     def handle_error(self, error_message):
         QMessageBox.critical(self, "Error", f"An error occurred: {error_message}")
         self.log_text.append(f"Error occurred: {error_message}")
+        self.start_button.setText("Start Processing")
+        try:        
+            self.start_button.clicked.disconnect()
+        except TypeError:
+            pass
+        self.start_button.clicked.connect(self.start_clicked)
+        self.start_button.setDisabled(False)
 
     def create_information_section(self, layout):
         info_frame = QFrame()
@@ -235,11 +297,20 @@ class MainWindow(QMainWindow):
         log_title.setObjectName("log_title")
         log_title.setAlignment(Qt.AlignCenter)
         log_title.setStyleSheet("padding: 6px;")
-        self.log_text = QTextEdit()  # Change here to use self.log_text
-        self.log_text.setReadOnly(True)
-        self.log_text.setStyleSheet("background-color:#1a1a2e;")
+        self.log_text_edit = QTextEdit()
+        self.log_text_edit.setReadOnly(True)
+        logTextBox = QTextEditLogger(self.log_text_edit)
+        
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        logTextBox.setFormatter(formatter)
+        self.log_text_edit.setStyleSheet("background-color:#1a1a2e;")
+        
+        logger = logging.getLogger()
+        logger.addHandler(logTextBox)
+        logger.setLevel(logging.DEBUG)
+
         log_vbox.addWidget(log_title)
-        log_vbox.addWidget(self.log_text)
+        log_vbox.addWidget(self.log_text_edit)
         layout.addWidget(log_frame, 1)
     
     def create_selection_section(self, layout):
@@ -260,11 +331,11 @@ class MainWindow(QMainWindow):
             checkbox = QCheckBox(option)
             checkbox.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             if option == "ALL":
-                checkbox.stateChanged.connect(lambda state, chks=self.checkboxes[:-1], log_text=self.log_text: toggle_all_checkboxes(chks, state, log_text))
+                checkbox.stateChanged.connect(lambda state, chks=self.checkboxes[:-1]: toggle_all_checkboxes(chks, state))
             else:
                 self.checkboxes.append(checkbox)
-                checkbox.stateChanged.connect(lambda state, opt=option, chk=checkbox, all_chk=self.checkboxes[-1], log_text=self.log_text:
-                                              checkbox_toggled(opt, state, chk, all_chk, log_text))
+                checkbox.stateChanged.connect(lambda state, opt=option, chk=checkbox, all_chk=self.checkboxes[-1]:
+                                              checkbox_toggled(opt, state, chk, all_chk))
             checkbox_layout.addWidget(checkbox)
     
         selection_vbox.addWidget(checkbox_frame)

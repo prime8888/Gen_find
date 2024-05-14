@@ -1,9 +1,6 @@
-import sys
-import csv
 from ui.utils import toggle_all_checkboxes, checkbox_toggled
-# import requests
-from PyQt5.QtWidgets import QMainWindow, QPushButton, QMenu, QTreeWidgetItem, QVBoxLayout, QWidget, QTextEdit, QHBoxLayout, QLabel, QCheckBox, QFrame, QSizePolicy, QMessageBox, QTreeView, QFileSystemModel, QProgressBar
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QDir, QRunnable, QThreadPool, QMetaObject, QObject, Q_ARG
+from PyQt5.QtWidgets import QMainWindow, QPushButton, QMenu, QVBoxLayout, QWidget, QTextEdit, QHBoxLayout, QLabel, QCheckBox, QFrame, QSizePolicy, QMessageBox, QTreeView, QFileSystemModel, QProgressBar
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QRunnable, QThreadPool, QObject
 from backend import *
 from ui.logger import *
 

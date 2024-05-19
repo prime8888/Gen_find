@@ -96,6 +96,7 @@ def fetch_records_and_process(organism, id, path, selected_regions, rettype="gbw
             delay *= 2  # Exponential backoff on general errors
             if delay > 60:  # Prevent excessively long wait times
                 break
+            
 
     # If all retries are exhausted, log and skip this record
     logger.warning(f"Failed to fetch record for ID {id} in {organism} after {retries} attempts: {last_exception}")
@@ -112,10 +113,19 @@ def extract_cds_and_related_features(records, selected_regions):
             introns_data = []
             if record:
                 for feature in record.features:
-                    feature_loc = str(feature.location)
+                    feature_loc = ''
+                    if isinstance(feature.location, CompoundLocation) and "join" in str(feature.location) and feature.location.strand == -1:
+                        feature_loc = "join("
+                        for part in reversed(feature.location.parts):
+                            feature_loc += str(part) + ","
+                        feature_loc = feature_loc[:-1] + ")"
+                    else:
+                        feature_loc = str(feature.location)
+                    if feature.location.strand == -1:
+                        feature_loc = "complement(" + feature_loc + ")"
                     if feature.type == "CDS" and feature_loc not in cds_data:
                         sequence, exons, introns = handle_complex_location(feature, record)
-                        cds_loc = feature_loc.replace("(+)", "").replace("(-)", "").replace(":", "..").replace("{", "(").replace("}", ")").replace("[", "").replace("]", "") 
+                        cds_loc = feature_loc.replace("(+)", "").replace("(-)", "").replace(":", "..").replace("{", "(").replace("}", ")").replace("[", "").replace("]", "").replace(" ", "")
                         cds_info = {
                             'header': f"CDS {organism} {record.name}: {cds_loc}",
                             'sequence': sequence,
@@ -131,12 +141,13 @@ def extract_cds_and_related_features(records, selected_regions):
                     file_path = os.path.join(path, filename)
                     with open(file_path, 'w') as file:
                         for cds in cds_data.values():
-                            file.write(f"{cds['header']}\n")
-                            file.write(str(cds['sequence']) + "\n")
+                            if len(cds['sequence']) > 0:
+                                file.write(f"{cds['header']}\n")
+                                file.write(str(cds['sequence']) + "\n")
                             for i, exon in enumerate(cds['exons'], start=1):
-                                file.write(f"CDS_{organism_modified} {record.name}: {cds['location']} Exon {i}\n")
-                                file.write(str(exon['sequence']) + "\n")
-                            file.write("\n")
+                                if len(exon['sequence']) > 0:
+                                    file.write(f"CDS_{organism_modified} {record.name}: {cds['location']} Exon {i}\n")
+                                    file.write(str(exon['sequence']) + "\n")
                             if 'intron' in selected_regions and cds['introns']:
                                 for i, intron in enumerate(cds['introns'], start=1):
                                     introns_data.append({
@@ -150,8 +161,9 @@ def extract_cds_and_related_features(records, selected_regions):
                     intron_file_path = os.path.join(path, intron_filename)
                     with open(intron_file_path, 'w') as file:
                         for intron in introns_data:
-                            file.write(f"{intron['header']}\n")
-                            file.write(str(intron['sequence']) + "\n")
+                            if len(intron['sequence']) > 0:
+                                file.write(f"{intron['header']}\n")
+                                file.write(str(intron['sequence']) + "\n")
 
 def extract_other_functional_regions(records, selected_regions):
     """Extracts and saves all specified functional regions (except CDS) to files."""
@@ -162,7 +174,16 @@ def extract_other_functional_regions(records, selected_regions):
             if record:
                 all_region_data = {}  # Dictionary to store all regions data before writing
                 for feature in record.features:
-                    feature_loc = str(feature.location)
+                    feature_loc = ''
+                    if isinstance(feature.location, CompoundLocation) and "join" in str(feature.location) and feature.location.strand == -1:
+                        feature_loc = "join("
+                        for part in reversed(feature.location.parts):
+                            feature_loc += str(part) + ","
+                        feature_loc = feature_loc[:-1] + ")"
+                    else:
+                        feature_loc = str(feature.location)
+                    if feature.location.strand == -1:
+                        feature_loc = "complement(" + feature_loc + ")"
                     if feature.type in selected_regions and feature.type != "CDS" and (feature.type not in all_region_data or feature_loc not in all_region_data[feature.type]):
                         sequence, _, _ = handle_complex_location(feature, record)
                         feature_type = feature.type
@@ -187,8 +208,9 @@ def extract_other_functional_regions(records, selected_regions):
                     if len(items) > 0:
                         with open(file_path, 'w') as file:
                             for region in items.values():
+                                if len(region['sequence']) > 0:
                                     file.write(f"{region['header']}\n")
-                                    file.write(str(region['sequence']) + "\n\n")
+                                    file.write(str(region['sequence']) + "\n")
 
 def process_genomic_data(records, selected_regions):
     if "CDS" in selected_regions or "exon" in selected_regions or "intron" in selected_regions:
@@ -215,7 +237,7 @@ def handle_complex_location(feature, record):
             # Extract the sequence for each part
             part_seq = record.seq[part.start:part.end]
             # If the part is on the reverse strand, reverse complement it
-            if 'complement' in feature.location.operator:
+            if feature.location.strand == -1:
                 part_seq = part_seq.reverse_complement()
             sequence += part_seq
             exons.append({'sequence': part_seq, 'location': f"{part.start}..{part.end}"})
@@ -224,24 +246,22 @@ def handle_complex_location(feature, record):
             if previous_end is not None and part.start > previous_end + 1:
                 if validate_bounds(previous_end + 1, part.start - 1, sequence_length):  # Validate intron bounds
                     intron_seq = record.seq[previous_end:part.start]
-                    if 'complement' in feature.location.operator:
+                    if feature.location.strand == -1:
                         intron_seq = intron_seq.reverse_complement()
                     introns.append({'sequence': intron_seq, 'location': f"{previous_end+1}..{part.start-1}", 'start_exon': i, 'end_exon': i + 1})
             previous_end = part.end
 
-        # If the overall operator is complement, reverse complement the entire sequence
-        if 'complement' in feature.location.operator:
-            sequence = sequence.reverse_complement()
     else:
         # For a simple location, validate bounds before extracting the sequence
         start = int(feature.location.start)
         end = int(feature.location.end)
         if validate_bounds(start, end, sequence_length):
-            sequence = feature.location.extract(record.seq)
+            sequence = record.seq[feature.location.start:feature.location.end]
+            if feature.location.strand == -1:
+                sequence = sequence.reverse_complement()
         else:
             # Handle the case where the location is out of bounds
             sequence = Seq('')  # Return an empty sequence if out of bounds
-
     return sequence, exons, introns
 
 def validate_bounds(start, end, sequence_length):

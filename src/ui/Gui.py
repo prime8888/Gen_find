@@ -107,8 +107,7 @@ class MainWindow(QMainWindow):
     def onStartApp(self):
         self.selected_regions = []
         self.selected_paths = []
-        # self.max_workers = os.cpu_count() + 8
-        self.max_workers = 12
+        self.max_workers = os.cpu_count() * 2
         self.logger = logging.getLogger()
         fetch_and_update_overview()
 

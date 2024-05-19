@@ -228,6 +228,7 @@ def handle_complex_location(feature, record):
     # Check if the location is a CompoundLocation to handle joins and complements
     if isinstance(feature.location, CompoundLocation):
         previous_end = None
+        previous_start = None
         # Iterate through parts of the CompoundLocation
         for i, part in enumerate(feature.location.parts):
             # Validate bounds before processing
@@ -243,13 +244,19 @@ def handle_complex_location(feature, record):
             exons.append({'sequence': part_seq, 'location': f"{part.start}..{part.end}"})
 
             # Calculate introns
-            if previous_end is not None and part.start > previous_end + 1:
-                if validate_bounds(previous_end + 1, part.start - 1, sequence_length):  # Validate intron bounds
-                    intron_seq = record.seq[previous_end:part.start]
-                    if feature.location.strand == -1:
+            if feature.location.strand == -1:
+                if previous_start is not None:
+                    if validate_bounds(part.end + 1, previous_start - 1, sequence_length):  # Validate intron bounds
+                        intron_seq = record.seq[part.end:previous_start]
                         intron_seq = intron_seq.reverse_complement()
-                    introns.append({'sequence': intron_seq, 'location': f"{previous_end+1}..{part.start-1}", 'start_exon': i, 'end_exon': i + 1})
-            previous_end = part.end
+                        introns.append({'sequence': intron_seq, 'location': f"{part.end+1}..{previous_start-1}", 'start_exon': i, 'end_exon': i + 1})
+                previous_start = part.start
+            else:
+                if previous_end is not None:
+                    if validate_bounds(previous_end + 1, part.start - 1, sequence_length):  # Validate intron bounds
+                        intron_seq = record.seq[previous_end:part.start]
+                        introns.append({'sequence': intron_seq, 'location': f"{previous_end+1}..{part.start-1}", 'start_exon': i, 'end_exon': i + 1})
+                previous_end = part.end
 
     else:
         # For a simple location, validate bounds before extracting the sequence

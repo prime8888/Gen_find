@@ -219,15 +219,18 @@ class MainWindow(QMainWindow):
         if not any(checkbox.isChecked() for checkbox in self.checkboxes):
             QMessageBox.critical(self, "Error", "Please select at least one region")
             return
+        self.selected_regions = [checkbox.text() for checkbox in self.checkboxes if checkbox.isChecked()]
+        if "ALL" in self.selected_regions:
+            self.selected_regions = ["mobile_element", "5'UTR", "telomere", "intron", "3'UTR", "rRNA", "centromere", "tRNA", "ncRNA", "CDS"]
+        if "intron" in self.selected_regions and "CDS" not in self.selected_regions:
+            QMessageBox.critical(self, "Error", "Please select CDS region as well to process introns")
+            return
         self.start_button.setText("Stop Processing")
         try:        
             self.start_button.clicked.disconnect()
         except TypeError:
             pass
         self.start_button.clicked.connect(self.stop_clicked)
-        self.selected_regions = [checkbox.text() for checkbox in self.checkboxes if checkbox.isChecked()]
-        if "ALL" in self.selected_regions:
-            self.selected_regions = ["mobile_element", "5'UTR", "telomere", "intron", "3'UTR", "rRNA", "centromere", "tRNA", "ncRNA", "CDS"]
         self.thread = WorkerThread(self.selected_paths, self.selected_regions, max_workers=self.max_workers)
         self.thread.errorOccurred.connect(self.handle_error)
         self.thread.dataFetched.connect(self.processing_finished)

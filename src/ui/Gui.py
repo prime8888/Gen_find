@@ -93,9 +93,16 @@ class WorkerThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # self.tax_ids = {'Humans': '9606', 'Fruit flies': '7227'}  # Example tax IDs
+        self.logger = logging.getLogger()
         self.initUI()
+        msgBox = QMessageBox()
+        msgBox.setIcon(QMessageBox.Information)
+        msgBox.setWindowTitle("Updating tree. Please wait............")
+        msgBox.setStandardButtons(QMessageBox.NoButton)
+        msgBox.show()
         self.onStartApp()
+        self.set_tree_path()
+        msgBox.close()
 
     def initUI(self):
         self.setup_central_widget()
@@ -108,7 +115,10 @@ class MainWindow(QMainWindow):
         self.selected_regions = []
         self.selected_paths = []
         self.max_workers = os.cpu_count() * 2
-        self.logger = logging.getLogger()
+        if self.max_workers < 4:
+            self.max_workers = 4
+        if self.max_workers > 12:
+            self.max_workers = 12
         fetch_and_update_overview()
 
 
@@ -128,16 +138,21 @@ class MainWindow(QMainWindow):
         right_side_layout.addLayout(logs_selection_layout)
         main_layout.addLayout(right_side_layout, 2)
 
-    def setup_tree_layout(self):
-        start_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        if start_dir.endswith('src'):
-            # Move up to the parent directory
-            start_dir = os.path.dirname(start_dir)
+    def set_tree_path(self):
+        if getattr(sys, 'frozen', False):
+            start_dir = os.path.dirname(sys.executable)
         else:
-            start_dir = start_dir
+            start_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        start_dir = os.path.join(start_dir, "Results")
+        self.tree.setRootIndex(self.model.index(start_dir))
+
+    def setup_tree_layout(self):
+        if getattr(sys, 'frozen', False):
+            start_dir = os.path.dirname(sys.executable)
+        else:
+            start_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         #Set up the file system model
         start_dir = os.path.join(start_dir, "Results")
-        # start_dir = "./Results"
         self.model = QFileSystemModel()
         self.model.setRootPath(start_dir)
 

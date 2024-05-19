@@ -3,9 +3,15 @@ import pandas as pd
 import os
 from datetime import datetime
 from ui.logger import *
+import sys
 
 url = "https://ftp.ncbi.nlm.nih.gov/genomes/GENOME_REPORTS/overview.txt"
-local_path = "local_overview.txt"
+# local_path = "local_overview.txt"
+if getattr(sys, 'frozen', False):
+    base_path = os.path.dirname(sys.executable)
+else:
+    base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+local_path = os.path.join(base_path, "local_overview.txt")
 
 def fetch_and_update_overview():
     """Fetch overview file from NCBI FTP and check if updates are needed based on the 'last-modified' header."""
@@ -34,10 +40,10 @@ def create_directories_from_overview():
     df = pd.read_csv(local_path, sep='\t')
 
     # Project root directory
-    base_path = "./Results"
+    res_path = os.path.join(base_path, "Results")
 
     for index, row in df.iterrows():
-        directory_path = os.path.join(base_path, row['Kingdom'], row['Group'], row['SubGroup'], row['#Organism/Name'].replace("[", "").replace(":", "").replace("?", "").replace("/", "").replace("]", ""))
+        directory_path = os.path.join(res_path, row['Kingdom'], row['Group'], row['SubGroup'], row['#Organism/Name'].replace("[", "").replace(":", "").replace("?", "").replace("/", "").replace("]", ""))
         os.makedirs(directory_path, exist_ok=True)
 
 def get_organisms_from_path(selected_path):
